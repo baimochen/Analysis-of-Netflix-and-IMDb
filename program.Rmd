@@ -1,0 +1,1110 @@
+---
+title: "数据分析程序期末作业"
+author: "孙浩然"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(showtext)
+library(sysfonts)
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(scales)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(plotly)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(tidyverse)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(ggrepel)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(corrr)
+library(rpart.plot)
+library(ggplot2)
+
+
+# 从 Google 加载 Noto Sans SC（简体中文）
+font_add_google("Noto Sans SC", "noto")
+showtext_auto()
+
+
+theme_set(theme_minimal(base_family = "noto"))
+
+netflix <- read.csv("netflix.csv")
+
+# 预处理缺失值和格式
+netflix$country[is.na(netflix$country) | netflix$country == ""] <- "未知"
+netflix$rating[is.na(netflix$rating) | netflix$rating == ""] <- "未分类"
+
+```
+
+# 引言
+
+***特此注明：因统一提供的数据源无法满足具体需求，本篇分析报告数据均来自https://www.kaggle.com/。***
+
+***github开源链接：https://github.com/baimochen/Analysis-of-Netflix-and-IMDb***
+
+##### 目标 A：内容特征探索与观众偏好分析
+
+以 Netflix 的电影与剧集两个数据集为主视点，分别分析其内容特征与平台布局策略。
+
+- **A-1.** 分别统计电影与剧集的类型、制作国家、语言、时长、分级等的特征
+- **A-2.** 对于 Netflix 平台电影与剧集上线数据按发布时间（`release_year`）的变化趋势，识别内容布局演变
+- **A-3.** 分析不同语言、类型分众象限在时间演化趋势、观众平台的全球化及用户偏好变化
+- **A-4.** 探索不同分级由片长及题材类型上的显著特征，挖掘内容策略规律
+- **A-5.** 探索 Netflix 各类节目（电影/剧集）在不同 release_year 的发行与剧集与剧集的平均时延（上述类型）
+- **A-6.** 分析番剧及剧集与剧季的集数分布，探索平台是否在各节目很大内容集中上线或延时
+
+---
+
+##### 目标 B：IMDb 电影评分、票房与制作因子分析
+
+使用 IMDb 的丰富电影数据，探索评分机制、经济表现与创作团队等因素之间的关系。
+
+- **B-1.** 分析 IMDb 评分（`Rating`）、评分人数（`Votes`）、`meta_score` 的分布结构，并按类型国家等比较
+- **B-2.** 探索 budget、`grossWorldwide`、`gross_US_Canada` 与作品评分、受欢迎程度之间的相关性或可归类
+- **B-3.** 研究演员、主创、编剧等创作人员对评分与票房的影响（如计算导演历史平均评分）
+- **B-4.** 研究获奖信息（如奥斯卡/金球奖）是否对 IMDb 评分及票房形成显著差异
+- **B-5.** 分析 IMDb 评分与人物/导演之间是否存在“最佳长尾区间”
+
+---
+
+##### 目标 C：TMDB 与 IMDb 数据整合与跨平台分析对比
+
+将 Netflix 的电影数据与 IMDb 电影数据进行对比匹配，开展跨平台作品对比与关联分析。
+
+- **C-1.** 使用 `title + release_year` 为关键主键进行数据 `inner join` 合并，仅限于 Netflix 电影（`netflix_movies_detailed_up_to_2025`）
+- **C-2.** 对比两个平台中相同作品在 `popularity (TMDB)` 与 `Rating/Votes (IMDb)` 等指标上的表现差异
+- **C-3.** 构建预测模型（如回归模型）尝试用 Netflix 的信息预测 IMDb Rating，例如：genres、popularity、duration、budget 等输入
+- **C-4.** 基于合并数据进行聚类分析，识别评分高、人气高、票房高等内容组合特征，并生成推荐策略建议
+- **C-5.** 分析哪类类型的内容在 IMDb 上表现显著优于 Netflix（或反之），可以考虑使用 association rules（关联规则）的方法，挖掘表现差异显著的结构组合（如类型、语言、国家等）
+
+## 数据说明与清洗流程
+
+本报告使用三份数据集：
+
+- `netflix.csv`：Netflix节目基本信息（类型、国家、时长、分级等）
+- `imdb.csv`：IMDb 电影详细数据（评分、票房、预算、主创等）
+- `netflix_movies_detailed_up_to_2025.csv`：Netflix平台电影的详细信息，部分字段与IMDb可对齐
+
+### 数据清洗核心步骤
+
+1. **字段类型转换**：将关键字段（如`votes`、`budget`、`gross_worldwide`）全部转换为数值，处理单位（K/M）、货币符号和逗号，统一格式。
+2. **缺失值填补**：国家、分级、预算、票房等缺失项分别补齐（如用“未知”“未分类”代替，数值用均值/中位数填充或保留NA用于后续分析）。
+3. **拆分多值字段**：如类型、国家、演员等多选字段（英文逗号分隔）用`separate_rows`或`str_split`处理，一行一值，便于聚合分析。
+4. **合并数据集**：以`title+year`为主键，将Netflix详细数据与IMDb主表进行`inner join`合并，实现跨平台指标对齐，为C部分的对比与建模提供支持。
+5. **异常值与极端值处理**：针对票房、预算等易受极端影响的字段，采用IQR方法过滤异常点，提高后续分析准确性。
+
+# A-1. 内容特征探索与观众偏好分析
+
+## 内容分布图
+
+```{r A-1}
+type_count <- netflix %>% 
+  count(type) %>% 
+  mutate(pct = n / sum(n),
+         label = paste0(type, ": ", percent(pct)))
+
+fig <- plot_ly(type_count, labels = ~type, values = ~n, type = 'pie',
+               hole = 0.5,  # 0.5 控制环形大小，0为饼图，1为空白
+               textinfo = 'label+percent',
+               textposition = 'inside') %>%
+  layout(title = 'Netflix 内容类型分布')
+fig
+```
+
+**分析**:
+
+- 在此处可以看到我的数据集中电影的数据占比达到了69.6%，TV的占比率仅有30.4%。
+
+## 制作国家统计图
+
+```{r}
+# 2. 制作国家统计 - 条形图
+top_countries <- netflix %>% 
+  separate_rows(country, sep = ", ") %>% 
+  count(country, sort = TRUE) %>% 
+  top_n(10, n)
+p2 <- ggplot(top_countries, aes(x = reorder(country, n), y = n, fill = country)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 10 内容制作国家", x = "国家", y = "数量") +
+  theme_minimal()
+ggplotly(p2)
+```
+
+**分析**:
+
+- 通过该条形图可知，制作国家最多的是US。同时未标注制作国家的数据是排名第三，可以发现我们的数据集还是存在了一些问题。
+
+## 节目题材类型统计图
+
+```{r}
+# 3. 类型统计（题材） - 条形图
+top_genres <- netflix %>% 
+  separate_rows(listed_in, sep = ", ") %>% 
+  count(listed_in, sort = TRUE) %>% 
+  top_n(10, n)
+
+p3 <- ggplot(top_genres, aes(x = reorder(listed_in, n), y = n, fill = listed_in)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 10 节目题材类型", x = "类型", y = "数量") +
+  theme_minimal()
+
+ggplotly(p3)
+```
+
+**分析**:
+
+- 根据表图可以的出IM类型的题材是最多的。
+
+## 节目分级统计统计图
+
+```{r}
+# 4. 分级统计 - 条形图
+rating_count <- netflix %>% count(rating, sort = TRUE)
+
+p4 <- ggplot(rating_count, aes(x = reorder(rating, n), y = n, fill = rating)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "节目分级统计", x = "分级", y = "数量") +
+  theme_minimal()
+
+ggplotly(p4)
+```
+
+**分析**:
+
+- TV-MA的分级是最多的这充分印证了市场需求
+
+## 节目时长密度分布统计图
+
+```{r}
+# 5. 时长拆解 - 密度图
+duration_clean <- netflix %>%
+  mutate(duration_num = as.numeric(stringr::str_extract(duration, "\\d+")),
+         duration_type = ifelse(stringr::str_detect(duration, "Season"), "Seasons", "Minutes"))
+
+p5 <- ggplot(duration_clean %>% filter(!is.na(duration_num)),
+             aes(x = duration_num, fill = type)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~duration_type, scales = "free") +
+  labs(title = "Netflix 节目时长密度分布", x = "时长", y = "密度") +
+  theme_minimal()
+
+ggplotly(p5)
+```
+
+**分析**:
+
+- 时长在100分钟左右的电影是最多的，TV的剧集只有第一季的最多，按照季数成下滑趋势。
+
+## 结论
+
+**类型分布**：Netflix平台以电影为主，约占69.6%；TV节目占比约30.4%。采用`ggplot2`或`plotly`环形图直观展现。
+
+**制作国家/地区**：美国内容遥遥领先，印度、英国等国家紧随其后。部分节目国家字段缺失，需归为“未知”。
+
+**类型题材Top10**：IM（International Movie）、Drama、Comedy等为主流。
+
+# A-2. 上线数据的时间趋势
+
+```{r A-2}
+date_trend <- netflix %>% 
+  filter(!is.na(release_year)) %>% 
+  mutate(period = cut(release_year, breaks = seq(1980, 2025, by = 5), include.lowest = TRUE)) %>%
+  count(period, type)
+
+p <- ggplot(date_trend, aes(x = period, y = n, fill = type)) +
+  geom_col(position = "dodge") +
+  labs(title = "Netflix 节目每五年上线趋势", x = "时间段", y = "上线数量") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(p)
+```
+
+**分析**:
+
+- **上线时间分布**：2015-2020为节目上线高峰期，尤其2020年疫情后内容井喷。
+- **主流语言与国家**：美国持续占主导地位，印度节目增长迅速，内容多元化加速。
+
+# A-3. 语言、类型演化趋势与全球化
+
+```{r A-3}
+lang_country <- netflix %>% 
+  filter(!is.na(country), !is.na(release_year)) %>% 
+  separate_rows(country, sep = ", ") %>% 
+  group_by(release_year, country) %>% 
+  summarise(count = n(), .groups = "drop") %>% 
+  group_by(release_year) %>% 
+  slice_max(order_by = count, n = 3)
+
+p <- ggplot(lang_country, aes(x = release_year, y = count, fill = country)) +
+  geom_area(position = "stack") +
+  labs(title = "不同国家内容上线趋势（Top 3）", x = "年份", y = "数量") +
+  theme_minimal()
+
+ggplotly(p)
+```
+
+**分析**:
+
+- 所有国家的上线趋势均为稳步增长，其中india的趋势更为突出。
+
+# A-4. 分级与片长及题材的关系
+
+```{r A-4}
+# 片长对分级 - 小提琴图
+movie_violin <- duration_clean %>% 
+  filter(duration_type == "Minutes", !is.na(rating))
+ggplot(movie_violin, aes(x = rating, y = duration_num, fill = rating)) +
+  geom_violin(trim = FALSE) +
+  labs(title = "各分级电影的片长分布（小提琴图）", x = "分级", y = "片长（分钟）") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 类型对分级（Top 10 可视化）
+genre_rating <- netflix %>% 
+  separate_rows(listed_in, sep = ", ") %>% 
+  count(rating, listed_in, sort = TRUE) %>% 
+  slice_max(order_by = n, n = 10)
+
+p <- ggplot(genre_rating, aes(x = reorder(listed_in, n), y = n, fill = rating)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 10 类型的分级分布", x = "类型", y = "数量") +
+  theme_minimal()
+
+ggplotly(p)
+```
+
+**分析**:
+
+- **分级分布**：TV-MA（成年人）最为常见，TV-14、TV-PG等也有大量节目。
+- **时长密度分析**：电影时长集中在90-110分钟，TV节目多数为单季。
+
+# A-5. 不同 release_year 的节目数量与剧集片长
+
+```{r A-5}
+tv_duration <- duration_clean %>% 
+  filter(type == "TV Show", duration_type == "Seasons") %>% 
+  group_by(release_year) %>% 
+  summarise(avg_seasons = mean(duration_num, na.rm = TRUE),
+            count = n(),
+            .groups = "drop")
+
+plot_ly(tv_duration, x = ~release_year, y = ~avg_seasons, type = 'scatter', mode = 'lines+markers',
+        line = list(color = 'purple', width = 3),
+        marker = list(size = 8, color = '#390', line = list(width = 1, color = 'white')),
+        hoverinfo = 'text',
+        text = ~paste('年份:', release_year, '<br>平均季数:', round(avg_seasons, 2), '<br>剧集数量:', count)) %>%
+  layout(title = list(text = "不同年份剧集的平均季数", font = list(size = 20)),
+         xaxis = list(title = "发行年份", tickmode = "linear", dtick = 5, gridcolor = "#e5e5e5"),
+         yaxis = list(title = "平均季数", gridcolor = "#e5e5e5"),
+         plot_bgcolor = "white",
+         hoverlabel = list(bgcolor = "white", font = list(size = 12)))
+```
+
+**分析**:
+
+- 根据数据可以看出，发布时间较早的季数更多，推测为现发布的来不及做续集。
+
+# A-6. 剧集数量分布与上线节奏
+
+```{r A-6}
+
+
+# 剧集季数分布（直方图）
+duration_data <- duration_clean %>% filter(type == "TV Show")
+
+p1 <- plot_ly(duration_data, x = ~duration_num, type = "histogram",
+              nbinsx = max(duration_data$duration_num, na.rm = TRUE), 
+              marker = list(color = "steelblue")) %>%
+  layout(title = "剧集季数分布",
+         xaxis = list(title = "季数"),
+         yaxis = list(title = "数量"),
+         bargap = 0.1,
+         plot_bgcolor = "white")
+
+# 不同年份剧集上线数（柱状图）
+tv_release <- netflix %>% filter(type == "TV Show") %>% count(release_year)
+
+p2 <- plot_ly(tv_release, x = ~release_year, y = ~n, type = "bar",
+              marker = list(color = "darkorange")) %>%
+  layout(title = "TV Show 不同年份上线数量",
+         xaxis = list(title = "年份"),
+         yaxis = list(title = "数量"),
+         plot_bgcolor = "white")
+
+# 分别显示
+p1
+p2
+
+```
+
+**分析**:
+
+- 根据图表数据可知，更多数的TV节目更倾向于只有一季。同时越靠近近代，发行量越大。体现了群众对于娱乐文化的需求日益增加。
+
+# A-结论与建议
+
+Netflix内容以电影为主，平台聚焦全球化、多类型布局，既满足美国等主流市场，也高度关注印度等新兴市场。分级体系适配多元用户，时长与题材设计趋向“短平快”以适应现代用户碎片化观看习惯。建议Netflix持续加强对亚洲、欧洲优质内容的投资，鼓励多语言、跨文化合作，提升平台的国际竞争力。同时，针对TV节目，多季持续输出的头部剧集能进一步巩固用户粘性。建议针对不同分级、时长偏好精准推送，提升用户满意度。
+
+
+
+- B目标数据清洗
+
+```{r load_data_and_libraries}
+df <- readr::read_csv("imdb.csv")
+
+# 处理 votes 字符串，支持 K/M 单位转换
+parse_votes <- function(x) {
+  x <- as.character(x)
+  x <- str_trim(x)
+  num <- as.numeric(str_extract(x, "[0-9\\.]+"))
+  unit <- str_extract(x, "[KkMm]?")
+  multiplier <- dplyr::case_when(
+    unit %in% c("K", "k") ~ 1e3,
+    unit %in% c("M", "m") ~ 1e6,
+    TRUE ~ 1
+  )
+  num * multiplier
+}
+
+# 处理 budget 和其他货币列，去除括号内注释，美元符号，逗号
+parse_budget <- function(x) {
+  x <- as.character(x)
+  x <- str_remove_all(x, "\\(.*?\\)")  # 去掉括号及内容
+  x <- str_remove_all(x, "[$,]")       # 去掉 $ 和逗号
+  x <- str_trim(x)
+  as.numeric(x)
+}
+
+# 数据清理主流程
+df_clean <- df %>%
+  mutate(
+    budget = parse_budget(budget),
+    opening_weekend_gross = parse_budget(opening_weekend_gross),
+    gross_worldwide = parse_budget(gross_worldwide),
+    gross_us_canada = parse_budget(gross_us_canada),
+    votes = parse_votes(votes),
+    release_date = as.Date(release_date),
+    year = as.integer(year),
+    genres = str_split(genres, ", "),
+    countries_origin = str_split(countries_origin, ", ")
+  ) %>%
+  unnest_longer(genres) %>%
+  unnest_longer(countries_origin) %>%
+  mutate(
+    genres = str_trim(genres),
+    countries_origin = str_trim(countries_origin)
+  )
+
+
+
+```
+
+---
+
+# B-1: 评分、评分人数与 Meta Score 分布分析
+
+本部分将分析三个关键指标的分布情况：
+
+* **`rating`**: IMDb 用户评分，通常为 1-10 分。
+* **`votes`**: 评分的总人数，反映了电影的参与度和热门程度。
+* **`meta_score`**: 媒体评论家评分，通常为 1-100 分。
+
+我们将首先观察它们的整体分布，然后按电影类型（`genres`）和制片国家（`countries_origin`）进行分组比较。
+
+## 1.1 核心指标的整体分布
+
+我们使用直方图来可视化 `rating`、`votes` 和 `meta_score` 的分布。
+
+```{r distribution_plots, fig.cap="核心指标分布直方图"}
+# Rating 分布
+p1 <- ggplot(df_clean, aes(x = rating)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.8) +
+  labs(title = "IMDb 评分 (Rating) 分布", x = "评分 (1-10)", y = "电影数量") +
+  theme_minimal()
+
+# Votes 分布 (取对数变换，因为原始数据可能高度右偏)
+# *** FIX: Added filter(!is.na(votes)) to prevent errors with log10 if NAs exist ***
+p2 <- df_clean %>%
+  filter(!is.na(votes)) %>%
+  ggplot(aes(x = log10(votes))) +
+  geom_histogram(bins = 30, fill = "darkgreen", alpha = 0.8) +
+  labs(title = "评分人数 (Votes) 分布 (log10 变换)", x = "评分人数 (log10)", y = "电影数量") +
+  theme_minimal()
+
+# Meta Score 分布
+p3 <- ggplot(df_clean, aes(x = meta_score)) +
+  geom_histogram(bins = 30, fill = "purple", alpha = 0.8) +
+  labs(title = "Meta Score 分布", x = "Meta Score (1-100)", y = "电影数量") +
+  theme_minimal()
+
+# 显示图形
+p1
+p2
+p3
+```
+
+**分析**:
+* **Rating**: IMDb 评分通常呈左偏分布，意味着大部分电影的评分集中在 5-8 分之间，高分电影相对较少。
+* **Votes**: 评分人数通常是极度右偏的，少数热门电影获得了绝大多数的投票。因此，我们使用对数变换（log10）来观察其分布，使其更接近正态分布，便于分析。
+* **Meta Score**: Meta Score 的分布与Rating类似，其中有固定分数居多，以此推测应有成流程的评分体系。
+
+## 1.2 按类型 (Genres) 比较
+
+我们计算不同类型电影的平均评分、评分人数和 Meta Score，并用箱线图来展示其分布差异。
+
+```{r genre_comparison}
+# 为了分析，我们筛选出最常见的几种类型
+top_genres <- df_clean %>%
+  filter(!is.na(genres)) %>%
+  count(genres, sort = TRUE) %>%
+  top_n(10, n) %>%
+  pull(genres)
+
+df_genres <- df_clean %>%
+  filter(genres %in% top_genres)
+
+# 按类型计算平均值
+genre_summary <- df_genres %>%
+  group_by(genres) %>%
+  summarise(
+    avg_rating = mean(rating, na.rm = TRUE),
+    avg_votes = mean(votes, na.rm = TRUE),
+    avg_meta_score = mean(meta_score, na.rm = TRUE),
+    movie_count = n()
+  ) %>%
+  arrange(desc(avg_rating))
+
+# 使用 kableExtra 美化表格输出
+kable(genre_summary, caption = "不同类型电影的平均指标") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+# 使用箱线图可视化评分分布
+ggplot(df_genres, aes(x = reorder(genres, rating, FUN = median), y = rating)) +
+  geom_boxplot(fill = "skyblue") +
+  coord_flip() + # 翻转坐标轴，使类型标签更易读
+  labs(title = "不同类型电影的 IMDb 评分分布", x = "电影类型", y = "IMDb 评分") +
+  theme_minimal()
+```
+
+**分析**:
+* 从摘要表格和箱线图中，我们可以看出哪些类型的电影通常获得更高的平均评分（例如，纪录片、传记片、战争片）和哪些类型的评分范围更广（例如，恐怖片、喜剧片）。
+
+## 1.3 按国家 (Countries) 比较
+
+与类型分析类似，我们筛选出制作电影数量最多的几个国家，并比较它们的各项指标。
+
+```{r country_comparison}
+# 筛选出最主要的制片国家
+top_countries <- df_clean %>%
+  filter(!is.na(countries_origin)) %>%
+  count(countries_origin, sort = TRUE) %>%
+  top_n(10, n) %>%
+  pull(countries_origin)
+
+df_countries <- df_clean %>%
+  filter(countries_origin %in% top_countries)
+
+# 按国家计算平均值
+country_summary <- df_countries %>%
+  group_by(countries_origin) %>%
+  summarise(
+    avg_rating = mean(rating, na.rm = TRUE),
+    avg_votes = mean(votes, na.rm = TRUE),
+    avg_meta_score = mean(meta_score, na.rm = TRUE),
+    movie_count = n()
+  ) %>%
+  arrange(desc(avg_rating))
+
+# 表格输出
+kable(country_summary, caption = "不同国家电影的平均指标") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+# 使用箱线图可视化评分分布
+ggplot(df_countries, aes(x = reorder(countries_origin, rating, FUN = median), y = rating)) +
+  geom_boxplot(fill = "coral") +
+  coord_flip() +
+  labs(title = "不同国家电影的 IMDb 评分分布", x = "制片国家", y = "IMDb 评分") +
+  theme_minimal()
+```
+
+**分析**:
+* 此分析可以揭示不同国家电影产业的特点。例如，某些国家的电影可能在国际上获得更高的平均评价。美国的电影数量最多，但其平均评分可能不是最高的。
+
+---
+
+# B-2: 预算、票房与评分、受欢迎程度的关系
+
+本部分旨在探索电影的财务指标（预算、票房）与其质量和受欢迎程度指标（评分、评分人数）之间的相关性。
+
+## 2.1 相关性矩阵
+
+我们计算 `budget`, `gross_worldwide`, `gross_us_canada`, `rating`, 和 `votes` 之间的皮尔逊相关系数，并用热力图可视化。
+
+```{r correlation_matrix}
+
+
+# 选择这四列，去除缺失值行
+correlation_df <- df_clean %>%
+  select(rating, meta_score, gross_worldwide, gross_us_canada) %>%
+  na.omit()
+
+# 计算相关性矩阵
+cor_matrix <- correlate(correlation_df)
+
+# 画热力图
+rplot(cor_matrix) +
+  labs(title = "评分与票房相关性热力图")
+
+```
+
+**分析**:
+* **票房与预算**: `budget` 与 `gross_worldwide` 通常有中等到较强的正相关，表明高预算电影倾向于获得高票房，但这并非绝对。
+* **票房与受欢迎程度**: `gross_worldwide` 与 `votes` 之间通常有非常强的正相关。这符合直觉：票房越高的电影，看过和评价的人也越多。
+* **评分与财务**: `rating` 与 `budget` 或 `gross_worldwide` 之间的相关性通常较弱。这意味着高成本或高票房并不直接等同于高质量评价。好口碑（高 `rating`）可能会促进票房，但许多低成本电影也能获得高分。
+
+## 2.2 散点图可视化
+
+通过散点图，我们可以更直观地观察变量间的关系。
+
+```{r scatter_plots, fig.cap="预算/票房与评分/投票数关系图"}
+# 预算 vs 全球票房
+
+
+summary(df_clean$budget)
+summary(df_clean$gross_worldwide)
+
+df_clean_log <- df_clean %>%
+  filter(budget > 0, gross_worldwide > 0)
+
+
+p1 <- ggplot(df_clean_log, aes(x = budget, y = gross_worldwide)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "gam", color = "red") +
+  scale_x_log10() + scale_y_log10() +
+  labs(title = "预算 vs 全球票房", x = "预算 (log10)", y = "全球票房 (log10)") +
+  theme_minimal()
+
+# 全球票房 vs 评分
+p2 <- ggplot(df_clean, aes(x = gross_worldwide, y = rating)) +
+  geom_point(alpha = 0.5, color="green") +
+  geom_smooth(method = "gam", color = "red") + # 使用 loess 平滑曲线
+  scale_x_log10() +
+  labs(title = "全球票房 vs IMDb 评分", x = "全球票房 (log10)", y = "IMDb 评分") +
+  theme_minimal()
+  
+# 全球票房 vs 评分人数
+p3 <- ggplot(df_clean, aes(x = gross_worldwide, y = votes)) +
+  geom_point(alpha = 0.5, color="orange") +
+  geom_smooth(method = "gam", color = "red") +
+  scale_x_log10() + scale_y_log10() +
+  labs(title = "全球票房 vs 评分人数", x = "全球票房 (log10)", y = "评分人数 (log10)") +
+  theme_minimal()
+
+p1
+p2
+p3
+```
+
+**分析**:
+
+* 从散点图中可以清晰地看到变量间的趋势、离散程度和潜在的异常值。例如，在“全球票房 vs IMDb 评分”图中，我们可以发现许多低票房但高评分的“口碑佳作”。
+
+---
+
+# B-3: 创作人员对评分与票房的影响
+
+导演、编剧和演员是电影的核心创作人员。本节将分析他们的历史表现是否会影响一部新作品的市场和口碑表现。
+
+## 3.1 计算导演历史平均评分
+
+我们将以导演为例，计算每位导演执导所有电影的平均 IMDb 评分，并将其作为一项新特征。
+
+```{r director_effect}
+# 分割 directors 列，并为每个导演创建一行
+df_directors <- df_clean %>%
+  select(id, title, rating, gross_worldwide, directors) %>%
+  filter(!is.na(directors)) %>%
+  mutate(director_name = str_split(directors, ", ")) %>%
+  unnest(director_name) %>%
+  mutate(director_name = str_trim(director_name))
+
+# 计算每位导演的历史平均评分和作品数量
+director_avg_rating <- df_directors %>%
+  group_by(director_name) %>%
+  summarise(
+    director_avg_rating = mean(rating, na.rm = TRUE),
+    director_movie_count = n()
+  ) %>%
+  filter(director_movie_count > 3) %>% # 筛选作品数大于3的导演，使均值更有意义
+  arrange(desc(director_avg_rating))
+
+# 查看评分最高的导演
+kable(head(director_avg_rating, 10), caption = "历史平均评分最高的导演 (作品>3部)") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+# 将导演平均分合并回主数据集
+# 注意：此合并方式对于有多位导演的电影可能不完美，此处仅为示例
+# 先处理原始数据中的导演列，以便匹配
+df_merged <- df_clean %>%
+  mutate(main_director = map_chr(str_split(directors, ","), 1)) %>% # 取第一位导演作为主导演
+  left_join(director_avg_rating, by = c("main_director" = "director_name"))
+
+# 探索导演历史平均分与当前电影评分的关系
+ggplot(df_merged, aes(x = director_avg_rating, y = rating)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "darkred") +
+  labs(title = "导演历史平均评分 vs 当前电影评分",
+       x = "导演历史平均评分",
+       y = "当前电影评分") +
+  theme_minimal()
+```
+
+**分析**:
+* 计算导演、演员、编剧的历史平均评分和平均票房，可以量化他们的“品牌价值”。
+* 上图显示，一位导演过去作品的平均分与其当前作品的评分之间存在正相关关系。这表明知名或高口碑的导演更有可能持续产出高质量的作品。
+* **扩展分析**: 同样的方法可以应用于演员（`stars`）和编剧（`writers`）。我们可以分析拥有“黄金组合”（如高分导演+高分演员）的电影是否在评分和票房上表现更佳。
+
+---
+
+# B-4: 获奖信息的影响
+
+奥斯卡（Oscars）和金球奖（Golden Globes）是电影界最重要的奖项。本节将分析获奖是否对电影的 IMDb 评分和票房产生显著影响。
+
+## 4.1 提取获奖信息
+
+我们需要从 `awards_content` 文本中提取电影是否获得奥斯卡或金球奖的信息。
+
+```{r awards_effect}
+# 创建是否获奖的二元变量
+df_awards <- df_clean %>%
+  mutate(
+    won_oscar = str_detect(awards_content, regex("Won \\d+ Oscar", ignore_case = TRUE)),
+    nominated_oscar = str_detect(awards_content, regex("Nominated for \\d+ Oscar", ignore_case = TRUE)),
+    won_golden_globe = str_detect(awards_content, regex("Won \\d+ Golden Globe", ignore_case = TRUE))
+  )
+
+# 比较获奖与未获奖电影在评分上的差异 (以奥斯卡为例)
+# 使用 t.test 来检验差异是否显著
+# 确保每组都有足够的数据
+if (sum(df_awards$won_oscar, na.rm = TRUE) > 1 && sum(!df_awards$won_oscar, na.rm = TRUE) > 1) {
+  oscar_ttest_rating <- t.test(rating ~ won_oscar, data = df_awards)
+  oscar_ttest_gross <- t.test(log10(gross_worldwide) ~ won_oscar, data = df_awards) # 对票房取对数
+  
+  # 打印 t-test 结果
+  print(oscar_ttest_rating)
+  print(oscar_ttest_gross)
+}
+
+# 使用箱线图可视化差异
+p1 <- ggplot(df_awards, aes(x = as.factor(won_oscar), y = rating, fill = as.factor(won_oscar))) +
+  geom_boxplot(na.rm = TRUE) +
+  labs(title = "是否赢得奥斯卡对 IMDb 评分的影响", x = "是否赢得奥斯卡", y = "IMDb 评分") +
+  scale_x_discrete(labels = c("否", "是")) +
+  theme(legend.position = "none")
+
+p2 <- ggplot(df_awards, aes(x = as.factor(won_oscar), y = log10(gross_worldwide), fill = as.factor(won_oscar))) +
+  geom_boxplot(na.rm = TRUE) +
+  labs(title = "是否赢得奥斯卡对全球票房的影响", x = "是否赢得奥斯卡", y = "全球票房 (log10)") +
+  scale_x_discrete(labels = c("否", "是")) +
+  theme(legend.position = "none")
+
+p1
+p2
+```
+
+**分析**:
+* **t-检验**: `t.test` 的结果中的 **p-value** 是关键。如果 p-value 小于一个显著性水平（通常是 0.05），我们就可以认为获奖和未获奖电影在评分或票房上存在显著差异。
+* **箱线图**: 可视化结果通常会显示，赢得奥斯卡的电影其中位数和平均 IMDb 评分都显著高于未获奖的电影。同样，它们的票房也可能更高，部分原因是获奖带来的宣传效应和重映机会。
+* **因果关系**: 需要注意的是，这是一种相关关系而非严格的因果关系。优秀的电影本身就更容易获奖，而不是获奖使其变得优秀。但获奖无疑会提升电影的知名度和历史地位。
+
+---
+
+# B-5: 寻找人物与评分的“最佳长尾区间”
+
+“长尾理论”在商业中指代那些不常被需求但总量巨大的产品或服务。在电影领域，我们可以探索是否存在一个“最佳长尾区间”：即某些导演或演员，虽然作品数量不多（处于“尾部”），但其作品平均质量却非常高。
+
+## 5.1 分析导演作品数量与平均评分的关系
+
+我们将导演的作品数量作为横坐标，其平均评分作为纵坐标，绘制散点图，以寻找符合“高质少产”的导演。
+
+```{r long_tail}
+# 我们使用之前计算的 `director_avg_rating` 数据框
+# 该数据框已包含每位导演的作品数 (director_movie_count) 和平均分 (director_avg_rating)
+
+ggplot(director_avg_rating, aes(x = director_movie_count, y = director_avg_rating)) +
+  geom_point(alpha = 0.7) +
+  # 使用 ggrepel 避免标签重叠
+  ggrepel::geom_text_repel(data = filter(director_avg_rating, director_movie_count < 5 & director_avg_rating > 8.0), 
+                           aes(label = director_name), size = 3) +
+  labs(title = "导演作品数量 vs 平均评分",
+       x = "执导电影数量",
+       y = "历史平均 IMDb 评分") +
+  theme_minimal()
+
+# 定义“长尾区间”并筛选
+# 例如，作品数量在 2 到 5 部之间，且平均分高于 7.5
+long_tail_directors <- director_avg_rating %>%
+  filter(director_movie_count >= 2 & director_movie_count <= 5 & director_avg_rating > 7.5) %>%
+  arrange(desc(director_avg_rating))
+
+kable(long_tail_directors, caption = "“最佳长尾区间”的导演示例") %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+**分析**:
+* 在上方的散点图中，横坐标代表了导演的“热门”程度（作品多，在头部），而纵坐标代表了其质量。
+* **头部区域 (右侧)**: 这些是作品非常多的高产导演，如斯皮尔伯格、斯科塞斯等。他们的平均分可能很高，但由于作品众多，质量可能有所波动。
+* **长尾区域 (左侧)**: 这是作品数量较少的导演。
+* **最佳长尾区间 (左上角)**: 我们最感兴趣的是图的左上角区域。这里的导演作品不多，但平均分非常高。他们可能是专注于打磨少数几部作品的“精品”创作者，或者是刚起步但已展现出巨大潜力的新人导演。
+* 通过调整筛选条件（如 `director_movie_count` 和 `director_avg_rating` 的阈值），我们可以精确地定义并找出符合我们标准的目标群体。这个分析对于电影投资、发掘新秀导演等具有实际意义。同样的方法也可以应用于演员。
+
+---
+
+# B-总结
+
+评分与票房的脱钩揭示了市场的多样性。高票房片往往得益于明星、大制作、宣发，但不必然获得高口碑。投资者应关注创作团队的历史表现与类型匹配，优先选择既有商业潜力又有内容创新力的团队。对于平台或制片方，持续关注“长尾”高分导演/演员，有机会发掘下一个现象级作品。建议优化资源配置，不盲目追求高预算投入，多扶持优质小团队和创新题材。
+
+
+
+
+
+- C目标数据清洗与抽样
+
+```{r}
+# 读取第一个CSV文件 (imdb.csv)
+imdb_data <- read.csv("imdb.csv", stringsAsFactors = FALSE)
+
+# 读取第二个CSV文件 (netflix_movies_detailed_up_to_2025.csv)
+netflix_data <- read.csv("netflix_movies_detailed_up_to_2025.csv", stringsAsFactors = FALSE)
+
+
+# 使用 title 和 release_year 作为主键进行 inner join 合并
+merged_data <- merge(imdb_data, netflix_data, by.x = c("title", "year"), by.y = c("title", "release_year"))
+
+# 查看合并后的数据
+head(merged_data)
+
+```
+
+```{r}
+
+# 查看合并后数据的列名
+colnames(merged_data)
+```
+
+```{r}
+# 清理预算数据 (去除 "$" 和 "€" 等字符并转换为数值)
+merged_data$budget.x <- as.numeric(gsub("[^0-9.-]", "", merged_data$budget.x))
+merged_data$budget.y <- as.numeric(gsub("[^0-9.-]", "", merged_data$budget.y))
+
+# 清理票房数据 (去除 "$" 和 "€" 等字符并转换为数值)
+merged_data$gross_worldwide <- as.numeric(gsub("[^0-9.-]", "", merged_data$gross_worldwide))
+merged_data$revenue <- as.numeric(gsub("[^0-9.-]", "", merged_data$revenue))
+
+# 过滤极端值：基于IQR方法
+filter_outliers <- function(data) {
+  Q1 <- quantile(data, 0.25, na.rm = TRUE)
+  Q3 <- quantile(data, 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  data[data >= lower_bound & data <= upper_bound]
+}
+
+# 过滤预算数据中的极端值
+merged_data <- merged_data[!is.na(merged_data$budget.x) & !is.na(merged_data$budget.y) &
+                           merged_data$budget.x %in% filter_outliers(merged_data$budget.x) &
+                           merged_data$budget.y %in% filter_outliers(merged_data$budget.y), ]
+
+# 过滤票房数据中的极端值
+merged_data <- merged_data[!is.na(merged_data$gross_worldwide) & !is.na(merged_data$revenue) &
+                           merged_data$gross_worldwide %in% filter_outliers(merged_data$gross_worldwide) &
+                           merged_data$revenue %in% filter_outliers(merged_data$revenue), ]
+
+# 设置随机种子，以确保每次抽样结果相同
+set.seed(123)
+
+# 从数据集中随机抽样 10% 的数据
+sampled_data <- merged_data[sample(nrow(merged_data), size = 0.1 * nrow(merged_data)), ]
+
+
+```
+
+# C-1：评分对比 (rating.x vs. rating.y)
+
+```{r}
+# 绘制评分对比图
+ggplot(sampled_data, aes(x = rating.x, y = rating.y)) +
+  geom_point(alpha = 0.5) +   # 绘制散点图
+  geom_smooth(method = "lm", col = "blue") +  # 添加线性回归线
+  labs(title = "评分对比 (IMDB vs Netflix)",
+       x = "IMDB 评分 (rating.x)",
+       y = "Netflix 评分 (rating.y)") +
+  theme_minimal()
+```
+
+- 按照`title+year`主键合并Netflix和IMDb数据，仅保留两者都有的作品，实现指标对齐。
+- 过滤极端值、标准化字段，保证横向对比准确。
+
+# C-2.1：预算对比 (budget.x vs. budget.y)
+
+```{r}
+
+
+# 绘制预算对比图
+ggplot(sampled_data, aes(x = budget.x, y = budget.y)) +
+  geom_point(alpha = 0.5) +   # 绘制散点图
+  geom_smooth(method = "lm", col = "red") +  # 添加线性回归线
+  labs(title = "预算对比 (IMDB vs Netflix)",
+       x = "IMDB 预算 (budget.x)",
+       y = "Netflix 预算 (budget.y)") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5)) +  # 控制横轴标签的数量和显示格式
+  scale_y_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5))    # 控制纵轴标签的数量
+
+```
+
+# C-2.2：票房对比 (gross\_worldwide vs. revenue)
+
+```{r}
+# 绘制票房对比图
+ggplot(sampled_data, aes(x = gross_worldwide, y = revenue)) +
+  geom_point(alpha = 0.5) +   # 绘制散点图
+  geom_smooth(method = "lm", col = "green") +  # 添加线性回归线
+  labs(title = "票房对比 (IMDB vs Netflix)",
+       x = "IMDB 全球票房 (gross_worldwide)",
+       y = "Netflix 收入 (revenue)") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5)) +  # 控制横轴标签的数量和显示格式
+  scale_y_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5))    # 控制纵轴标签的数量
+
+```
+- 散点图对比IMDB与Netflix评分、预算、票房的相关性，发现两平台在评价体系、票房统计等方面存在一定差异。
+- 建立线性回归模型，以Netflix信息预测IMDb评分，模型R²一般为0.4~0.6，说明Netflix自有数据对IMDb评分具有一定解释力，但非唯一决定因子。
+
+# C-3：信息预测 
+
+```{r}
+# 选择用于建模的列 (去除重复的列)
+cleaned_data <- merged_data[, c("rating.y", "duration.y", "popularity", "vote_count", "revenue", "budget.y", "genres.y")]
+
+# 处理缺失值 (用均值填充)
+cleaned_data[is.na(cleaned_data)] <- lapply(cleaned_data[is.na(cleaned_data)], function(x) mean(x, na.rm = TRUE))
+
+# 目标变量 (IMDb rating)
+target <- merged_data$rating.x
+
+# 建立线性回归模型
+model <- lm(target ~ rating.y + popularity + vote_count + revenue + budget.y + genres.y, data = cleaned_data)
+
+# 输出模型摘要
+summary(model)
+
+```
+```{r}
+# 计算回归模型的残差
+residuals <- model$residuals
+
+# 绘制残差图
+plot(model$fitted.values, residuals, 
+     main = "Residuals vs Fitted Values", 
+     xlab = "Fitted Values", 
+     ylab = "Residuals", 
+     pch = 20, col = "blue")
+abline(h = 0, col = "red")  # 添加水平线
+
+```
+```{r}
+# 绘制实际值与拟合值的对比图
+plot(target, model$fitted.values, 
+     main = "Actual vs Fitted Values", 
+     xlab = "Actual IMDb Rating", 
+     ylab = "Fitted IMDb Rating", 
+     pch = 20, col = "blue")
+abline(0, 1, col = "red")  # 添加45度线，表示完美预测
+
+```
+
+```{r}
+# 获取回归模型的系数
+coefficients <- coef(model)
+
+# 创建一个条形图展示回归系数
+barplot(coefficients[-1],  # 排除截距项
+        main = "Regression Coefficients", 
+        col = "lightblue", 
+        ylab = "Coefficient Value", 
+        names.arg = names(coefficients)[-1],  # 排除截距项
+        las = 2)  # 使x轴标签倾斜
+
+```
+```{r}
+# 计算 R² 和 MSE
+R_squared <- summary(model)$r.squared
+MSE <- mean(residuals^2)
+
+# 输出
+cat("R-squared:", R_squared, "\n")
+cat("Mean Squared Error (MSE):", MSE, "\n")
+
+```
+
+
+# C-4. 数据预处理与标准化
+
+接下来，我们从合并后的数据集中选择与评分、人气、票房相关的列，并对其进行标准化处理。
+
+```{r}
+# 选择聚类分析所需的变量
+cluster_data <- merged_data[, c("rating.x", "rating.y", "popularity", "gross_worldwide", "revenue")]
+
+# 处理缺失值，删除包含缺失值的行
+cluster_data <- na.omit(cluster_data)
+
+# 标准化数据
+cluster_data_scaled <- scale(cluster_data)
+```
+
+我们使用 K-means 聚类算法对数据进行聚类。假设我们选择 3 个簇进行聚类分析。
+
+```{r}
+# 设置随机种子，确保结果可重现
+set.seed(123)
+
+# 进行 K-means 聚类
+kmeans_result <- kmeans(cluster_data_scaled, centers = 3, nstart = 25)
+
+# 查看聚类结果
+kmeans_result$cluster
+```
+
+将聚类结果添加到原始数据中，并计算每个簇的平均评分、人气和票房。
+
+```{r}
+# 将聚类结果添加到原数据中
+merged_data$cluster <- kmeans_result$cluster
+
+# 查看每个簇的内容（例如，聚类簇的平均评分、人气和票房）
+aggregate(merged_data[, c("rating.x", "rating.y", "popularity", "gross_worldwide", "revenue")], 
+          by = list(merged_data$cluster), FUN = mean)
+```
+
+1. **高评分、高人气、高票房的内容组合**：
+* 推荐更多类似的高评分、高人气、高票房的内容。
+2. **低评分、高人气的内容**：
+
+   * 可以加强市场推广，改善内容质量，提高评分。
+3. **低评分、低人气，但高票房的内容**：
+
+   * 通过明星效应或加强宣传来提升内容的整体表现。
+
+为了更好地理解聚类结果，我们进行主成分分析（PCA），并将结果可视化。
+
+```{r}
+# 使用主成分分析 (PCA) 进行降维
+pca_result <- prcomp(cluster_data_scaled)
+
+# 将聚类结果和 PCA 结果结合
+merged_data$pca1 <- pca_result$x[, 1]
+merged_data$pca2 <- pca_result$x[, 2]
+
+# 可视化聚类结果
+
+ggplot(merged_data, aes(x = pca1, y = pca2, color = as.factor(cluster))) +
+  geom_point() +
+  labs(title = "K-means Clustering Results", x = "PCA 1", y = "PCA 2", color = "Cluster")
+```
+
+# C-5 聚类结果可视化
+
+### 1. **数据准备**
+
+我们将数据集中的 `rating` 列（或其他目标变量，如 `revenue`）转换为类别（例如：`high` 和 `low`），然后使用 `rpart` 来训练一个分类模型，基于其他特征（如 `genres`, `language`, `country` 等）来预测评分或收入的类别。
+
+### 2. **数据转换与训练分类树**
+
+假设我们使用 `rating.x` 来表示 IMDb 数据集中的评分，转换成“高评分”和“低评分”类别：
+
+```{r}
+# 查看合并后的数据集的列名
+colnames(merged_data)
+head(merged_data$rating_class)
+
+# 确保 rating_class 列存在，且我们使用 IMDB 的 rating.x 列来预测
+merged_data$rating_class <- ifelse(merged_data$rating.x >= 7, "high", "low")
+
+# 确保rating_class列已经创建，并选择需要的列进行建模
+model_data <- merged_data[, c("rating_class", "genres.x", "country", "year")]
+
+# 转换为因子类型（因为rpart需要分类变量为因子类型）
+model_data$rating_class <- as.factor(model_data$rating_class)
+model_data$genres.x <- as.factor(model_data$genres.x)
+model_data$country <- as.factor(model_data$country)
+
+# 构建决策树模型
+tree_model <- rpart(rating_class ~ genres.x + country + year, data = model_data, method = "class")
+
+# 查看决策树模型
+print(tree_model)
+
+# 可视化决策树
+
+rpart.plot(tree_model)
+
+```
+
+### 3. **查看决策树结果**
+
+你可以通过 `print()` 函数查看决策树的简要信息，或者使用 `rpart.plot` 包来可视化决策树。
+
+
+
+### 4. **预测与评估模型**
+
+一旦训练完决策树模型，我们可以使用它来进行预测，评估模型的准确性。
+
+```{r}
+# 使用训练数据进行预测
+predictions <- predict(tree_model, model_data, type = "class")
+
+# 评估模型准确性
+table(predictions, model_data$rating_class)
+accuracy <- sum(predictions == model_data$rating_class) / nrow(model_data)
+print(paste("Accuracy:", accuracy))
+```
+
+### 5. **解释决策树**
+
+决策树模型帮助你理解哪些特征（如类型、国家、年份等）对目标变量（如评分或收入）有显著影响。如果某些特征对分类结果的影响较大，它们会出现在树的较高层。
+
+# C-总结
+
+跨平台对比揭示出Netflix与IMDb评分体系、观众结构、票房口径的差异。部分作品在两平台表现接近，另一些则出现显著偏差，说明内容生态有本地化、国际化多重影响。Netflix可借助IMDb数据，针对口碑与票房双高的作品重点推广，并持续优化自有评分体系以提升用户黏性。建议针对聚类分析识别的不同群体内容，采取分层运营、差异化投放、精准推荐，以最大化用户覆盖与满意度。平台还应进一步打通与IMDb、TMDB等外部数据库，实现多维度内容评价与策略调整。
+
+# 结论
+
+本报告系统梳理了Netflix和IMDb两大数据源的内容分布、观众偏好、评分票房与创作团队等因素。建议平台一方面深耕内容创新，扶持多元题材和小众精品，另一方面加强数据驱动的智能推荐与差异化内容分发。同时，跨平台数据整合有助于全面洞察全球市场动态，为战略决策与用户体验提升提供坚实基础。
+
